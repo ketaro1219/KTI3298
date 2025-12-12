@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Custom Fee 계산기 - 개선판 (안전모드: math.js, SortableJS 적용)</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.3.0/math.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+
+<style>
+  body { font-family: Arial, sans-serif; margin: 24px; background: #f7fafc; color:#111827; }
+  h1 { font-size: 24px; margin-bottom: 16px; }
+  .panel { background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:16px; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:12px; }
+  label { font-weight:600; font-size:13px; color:#374151; }
+  input, select, textarea { width:100%; padding:8px; border:1px solid #d1d5db; border-radius:6px; box-sizing: border-box; }
+  button { padding:10px 14px; background:#2563eb; color:#fff; border:none; border-radius:6px; cursor:pointer; font-weight:600; }
+  button.secondary { background:#6b7280; }
+  button.danger { background:#dc2626; }
+  button.success { background:#059669; }
+  /* [수정] 규칙 행에 드래그 핸들 추가 */
+  .rule { border:1px solid #e5e7eb; border-radius:8px; padding:12px; margin-top:10px; background:#f9fafb; cursor: grab; }
+  .rule.sortable-drag { opacity: 0; } /* 드래그되는 요소는 숨김 */
+  .rule-drag-handle { cursor: move; color: #4b5563; }
+  .muted { color:#6b7280; font-size:12px; }
+  .result { margin-top:8px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  .badge { display:inline-block; padding:2px 6px; border-radius:9999px; font-size:11px; background:#eef2ff; color:#3730a3; margin-left:6px; }
+  table.simple { width:100%; border-collapse: collapse; margin-top:8px; }
+  table.simple th, table.simple td { border:1px solid #e5e7eb; padding:6px; font-size:13px; }
+  .flex { display:flex; gap:8px; align-items:center; }
+</style>
+</head>
+<body onload="loadSavedSettings()">
+
+<h1>사용자 입력 계산기 </h1>
+
+<div class="panel">
+  <h3>기본 입력값 및 설정</h3>
+  <div class="grid">
+    <div>
+      <label>공사비 (원) - **부가세 포함** 금액</label>
+      <input type="text" id="cost_x" value="165,000,000" oninput="formatNumber(this); calculateFee();">
+    </div>
+    <div>
+      <label>용역 기간 (월)</label>
+      <input type="text" id="months" value="12" oninput="this.value=this.value.replace(/[^0-9]/g,''); calculateFee()">
+    </div>
+    <div>
+      <label>추가업무비용 EX (원)</label>
+      <input type="text" id="extra" value="0" oninput="this.value=this.value.replace(/[^0-9]/g,''); calculateFee()">
+    </div>
+    <div>
+      <label>절사 단위</label>
+      <select id="round_unit" onchange="calculateFee()">
+        <option value="원단위">원단위</option>
+        <option value="천단위">천단위</option>
+        <option value="만단위" selected>만단위</option>
+      </select>
+    </div>
+    <div>
+      <label>공사 유형 (보험 계산용)</label>
+      <select id="insurance_project_type" onchange="calculateFee()">
+        <option value="관람집회시설공사">관람집회시설공사</option>
+        <option value="주거시설공사">주거시설공사</option>
+        <option value="기타시설공사" selected>기타시설공사</option>
+      </select>
+    </div>
+    <div>
+      <label>요율 보정 적용 (요율표)&nbsp;</label>
+      <select id="rate_align_select" onchange="calculateFee()">
+        <option value="1.0">보정 없음 (1.0)</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h3>&nbsp;요율표 불러오기 및 편집(파일 업로드 및 테이블 편집)</h3>
+  <div class="flex" style="margin-bottom:8px;">
+    <input type="file" id="jsonUpload" accept=".json">
+    <button class="secondary" onClick="downloadCurrentRateTable()">요율표 <br>
+    다운로드</button>
+<div class="muted" id="rate_info" style="margin-left:8px;"></div>
+  </div>
+
+  <div id="manual_editor_area" style="margin-top:12px;">
+    <div class="muted">JSON 수동 편집: 아래에 JSON(요율표)을 붙여넣거나 파일 업로드 후 '편집 열기'를 선택하세요.</div>
+    <textarea id="json_manual_input" rows="6" placeholder='{"name":"...", "headers":[...], "data":[ [...], ... ], "align":[["label",1.0]], "setrule":{...} }'></textarea>
+    <div class="flex" style="margin-top:8px;">
+      <button onclick="loadManualJson()">JSON 로드 (파싱)</button>
+      <button class="secondary" onclick="openTableEditorFromTextarea()">편집기에서 열기</button>
+      <button class="secondary" onclick="clearManualInput()">지우기</button>
+    </div>
+
+    <div id="json_table_editor" style="margin-top:12px; display:none;">
+      <div class="flex" style="justify-content:space-between; align-items:center;">
+        <div>
+          <button onclick="addTableRow()">+ 행 추가</button>
+          <button class="secondary" onclick="saveManualJsonToRateTable()">Save to RateTable</button>
+          <button class="secondary" onclick="cancelTableEditor()">닫기</button>
+        </div>
+        <div class="muted">편집 후 반드시 "Save to RateTable" 눌러 적용하세요.</div>
+      </div>
+      <div id="table_editor_container" style="margin-top:8px; overflow:auto; max-height:360px;"></div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h3>계산 규칙 관리</h3>
+  <div class="flex" style="gap:8px; align-items:center; margin-bottom:12px;">
+    <button onclick="addRule()">+ 계산 행 추가</button>
+    <button class="secondary" onclick="clearRules()">규칙 초기화</button>
+    <button class="success" onclick="saveSettingsToFile()">⚙️ 설정 저장</button>
+    <button class="secondary" onclick="triggerLoadSettingsFile()">⚙️ 설정 로드</button>
+    <input type="file" id="settingsFileInput" accept=".json" style="display:none;" />
+    <span class="muted">규칙은 위에서 아래 순서대로 적용됩니다. (☰ 정렬 핸들로 순서 변경 가능)</span>
+  </div>
+  <div id="rules_container"></div>
+</div>
+
+<div class="panel">
+  <div class="flex" style="gap:8px;">
+    <button onclick="calculateFee()">계산하기</button>
+    <button class="secondary" onclick="toggleDebug()">디버그 토글</button>
+  </div>
+  <div id="results" class="result"></div>
+</div>
+
+<script>
+/* ------------------ 기본 유틸/상수 (기존 코드 대부분 유지) ------------------ */
+const UNITS = [
+  { label: '--- 단위 지정 ---', value: '', factor: 1 },
+  { label: '금액 - 원', value: '원', factor: 1 },
+  { label: '금액 - 천원', value: '천원', factor: 1 / 1000 },
+  { label: '금액 - 백만원', value: '백만원', factor: 1 / 1000000 },
+  { label: '금액 - 억원', value: '억원', factor: 1 / 100000000 },
+  { label: '요율 - %', value: '%', factor: 1 }, 
+  { label: '무단위', value: '무단위', factor: 1 },
+  { label: '기간 - 월', value: '월', factor: 1 },
+  { label: '기간 - 년', value: '년', factor: 1 }
+];
+const OPERATORS = [
+  { label: '같다 (=)', value: '==' },
+  { label: '같지 않다 (!=)', value: '!=' },
+  { label: '크다 (>)', value: '>' },
+  { label: '작다 (<)', value: '<' },
+  { label: '크거나 같다 (>=)', value: '>=' },
+  { label: '작거나 같다 (<=)', value: '<=' }
+];
+function getUnitOptionsHTML(currentValue = '') {
+  return UNITS.map(u => `<option value="${u.value}" ${u.value === currentValue ? 'selected' : ''}>${u.label}</option>`).join('');
+}
+function getOperatorOptionsHTML(currentValue = '') {
+  return OPERATORS.map(op => `<option value="${op.value}" ${op.value === currentValue ? 'selected' : ''}>${op.label}</option>`).join('');
+}
+function getUnitFactor(unitValue) {
+  const unit = UNITS.find(u => u.value === unitValue);
+  return (unit && unit.factor) ? unit.factor : 1;
+}
+/**
+ * [수정] formatNumber: 숫자와 소수점만 허용하고 쉼표를 포맷팅하여 표시
+ */
+function formatNumber(input) {
+  // 1. 쉼표(,)를 제거한 후 숫자와 소수점만 남깁니다.
+  let cleaned = input.value.replace(/,/g, '').replace(/[^\d.]/g, '');
+  
+  if (cleaned === '') { 
+    input.value = ''; 
+    return; 
+  }
+  
+  // 2. 소수점은 하나만 허용
+  const parts = cleaned.split('.');
+  
+  // 3. 정수부만 분리하여 쉼표 포맷팅 (부분적으로 입력하는 동안 오류 방지)
+  const integerPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  
+  // 4. 소수점 복구
+  input.value = parts.length > 1 ? integerPart + '.' + parts[1] : integerPart;
+  
+  updateRateXValueSelects();
+}
+
+/* ------------------ 상태 ------------------ */
+let rateTable = null;
+let rules = [];
+let ruleCounter = 0;
+let showDebug = false;
+
+/* ------------------ 보험표 (기존 유지) ------------------ */
+const insuranceRate = { data: [
+  ["관람집회시설공사",0.00410,0.00065,0.00398,0.00063,0.00386,0.00061,0.00373,0.00060,0.00361,0.00057,3],
+  ["주거시설공사",    0.00350,0.00050,0.00340,0.00048,0.00330,0.00045,0.00320,0.00043,0.00310,0.00040,2],
+  ["기타시설공사",    0.00200,0.00030,0.00190,0.00028,0.00180,0.00026,0.00170,0.00024,0.00160,0.00022,2]
+] };
+
+/* ------------------ Rate align select 업데이트 ------------------ */
+function updateRateAlignSelect(alignArray){
+  const sel = document.getElementById('rate_align_select');
+  sel.innerHTML = ''; sel.add(new Option('보정 없음 (1.0)', '1.0'));
+  if(Array.isArray(alignArray)){
+    alignArray.forEach(([label, rate])=>{
+      if(typeof label === 'string' && typeof rate === 'number') sel.add(new Option(`${label} (${rate.toFixed(2)})`, rate.toString()));
+    });
+  }
+}
+
+/* ------------------ JSON 파일 업로드 핸들러 (요율표) ------------------ */
+document.getElementById('jsonUpload').addEventListener('change', (e)=>{
+  const f = e.target.files[0]; if(!f) return;
+  const r = new FileReader();
+  r.onload = ev => {
+    try {
+      const parsed = JSON.parse(ev.target.result);
+      if(!parsed.headers || !parsed.data) { alert('요율 JSON에는 headers 와 data가 필요합니다.'); return; }
+      // setrule 처리
+      handleJsonLoadWithSetrule(parsed);
+      // 또한 textarea에 원본을 복사
+      document.getElementById('json_manual_input').value = JSON.stringify(parsed, null, 2);
+    } catch(err){
+      alert('JSON 파싱 오류: ' + err.message);
+    }
+  };
+  r.readAsText(f);
+});
+
+/* ------------------ setrule 반영 로직 ------------------ */
+function handleJsonLoadWithSetrule(parsedJson){
+  rateTable = parsedJson;
+  document.getElementById('rate_info').textContent = `로드됨: ${rateTable.name || '(이름 없음)'} | cols=${rateTable.headers.length}, rows=${rateTable.data.length}`;
+  updateRateAlignSelect(rateTable.align);
+  updateRateXValueSelects();
+
+  // setrule 있을 시 확인 창
+  if(parsedJson.setrule){
+    const apply = confirm('JSON에 setrule() 이 포함되어 있습니다. 계산규칙관리 및 입력값을 적용하시겠습니까? (확인=적용, 취소=무시)');
+    if(apply){
+      const s = parsedJson.setrule;
+      if(s.inputs) loadInputs(s.inputs);
+      if(s.rules) loadRules(s.rules);
+      alert('setrule의 입력값/규칙을 적용했습니다.');
+    } else {
+      alert('setrule을 무시하고 요율표만 로드했습니다.');
+    }
+  } else {
+    // 기존 behavior: JSON 내부에 $default_rules$/$default_inputs$ 같은 키가 있을 수 있음
+    if (parsedJson.$default_rules$) { loadRules(parsedJson.$default_rules$); alert(`JSON 기본 규칙 ${parsedJson.$default_rules$.length}개 로드됨`); }
+    if (parsedJson.$default_inputs$) { loadInputs(parsedJson.$default_inputs$); alert('JSON 기본 입력값 로드됨'); }
+  }
+}
+
+/* ------------------ JSON 수기 입력 (파싱) ------------------ */
+function loadManualJson(){
+  const txt = document.getElementById('json_manual_input').value;
+  if(!txt.trim()) { alert('JSON 데이터를 입력하세요.'); return; }
+  try{
+    const parsed = JSON.parse(txt);
+    if(!parsed.headers || !parsed.data){ alert('요율 JSON 포맷 오류: headers/data 필드 필수'); return; }
+    handleJsonLoadWithSetrule(parsed);
+    alert('JSON 데이터가 성공적으로 로드되었습니다.');
+  }catch(err){
+    alert('JSON 파싱 오류: ' + err.message);
+  }
+}
+
+/* ------------------ 수기편집 -> 테이블 에디터 변환 ------------------ */
+function openTableEditorFromTextarea(){
+  const txt = document.getElementById('json_manual_input').value;
+  if(!txt.trim()){ alert('먼저 JSON을 붙여넣으세요.'); return; }
+  try{
+    const parsed = JSON.parse(txt);
+    if(!parsed.headers || !parsed.data){ alert('headers/data 필드 필요'); return; }
+    renderTableEditor(parsed);
+  } catch(err){
+    alert('JSON 파싱 오류: ' + err.message);
+  }
+}
+function renderTableEditor(parsed){
+  document.getElementById('json_table_editor').style.display = 'block';
+  const container = document.getElementById('table_editor_container');
+  container.innerHTML = '';
+  // 헤더
+  let html = '<table class="simple"><thead><tr>';
+  parsed.headers.forEach(h => html += `<th contenteditable="false">${escapeHtml(String(h))}</th>`);
+  html += '<th>행조작</th></tr></thead><tbody id="editor_tbody">';
+  parsed.data.forEach((row, ridx) => {
+    html += `<tr data-row="${ridx}">`;
+    parsed.headers.forEach((_, cidx) => {
+      const cell = row[cidx] !== undefined ? row[cidx] : '';
+      // [개선] onblur를 추가하여 숫자 입력 시 포맷을 자동으로 정리할 수 있으나, 여기서는 save 로직만 수정
+      html += `<td contenteditable="true" data-r="${ridx}" data-c="${cidx}">${escapeHtml(String(cell))}</td>`;
+    });
+    html += `<td><button onclick="removeTableRow(${ridx})" class="small">삭제</button></td></tr>`;
+  });
+  html += '</tbody></table>';
+  container.innerHTML = html;
+  // store editor model
+  container._editorModel = parsed;
+}
+
+function addTableRow(){
+  const container = document.getElementById('table_editor_container');
+  if(!container._editorModel) return alert('편집기 모델이 없습니다.');
+  const model = container._editorModel;
+  const newRow = model.headers.map(()=>'');
+  model.data.push(newRow);
+  renderTableEditor(model);
+}
+function removeTableRow(idx){
+  const container = document.getElementById('table_editor_container');
+  if(!container._editorModel) return;
+  const model = container._editorModel;
+  model.data.splice(idx,1);
+  renderTableEditor(model);
+}
+function cancelTableEditor(){
+  document.getElementById('json_table_editor').style.display = 'none';
+}
+
+/**
+ * [수정] saveManualJsonToRateTable: 테이블 편집 내용을 rateTable에 반영 시,
+ * 쉼표를 제거한 후 숫자로 변환하여 숫자 입력 문제 해결
+ */
+function saveManualJsonToRateTable(){
+  const container = document.getElementById('table_editor_container');
+  if(!container._editorModel) return alert('편집 모델 없음');
+  const model = container._editorModel;
+  // 읽기: 각 cell의 current text
+  const tbody = document.getElementById('editor_tbody');
+  const newData = [];
+  for(const tr of tbody.querySelectorAll('tr')){
+    const r = [];
+    for(const td of tr.querySelectorAll('td[data-c]')){
+      const text = td.textContent.trim();
+      
+      // [수정 핵심] 쉼표(,)를 제거한 후 숫자로 변환 시도
+      const cleanedText = text.replace(/,/g, ''); 
+      const num = Number(cleanedText);
+      
+      // 숫자로 유효한 경우 (빈 문자열이 아닐 때) 숫자로 저장, 아니면 원문(문자열) 저장
+      r.push((!isNaN(num) && text !== '') ? num : text);
+    }
+    newData.push(r);
+  }
+  model.data = newData;
+  // model을 현재 rateTable로 설정
+  rateTable = { ...model };
+  document.getElementById('json_manual_input').value = JSON.stringify(rateTable, null, 2);
+  document.getElementById('rate_info').textContent = `편집 적용됨: ${rateTable.name || '(이름 없음)'} | cols=${rateTable.headers.length}, rows=${rateTable.data.length}`;
+  updateRateAlignSelect(rateTable.align);
+  updateRateXValueSelects();
+  alert('편집 결과가 rateTable에 반영되었습니다.');
+  cancelTableEditor();
+  calculateFee(); // 테이블 데이터 변경 후 계산 다시 실행
+}
+
+/* ------------------ 설정 파일 저장/불러오기 (파일) ------------------ */
+function saveSettingsToFile(){
+  const settings = {
+    inputs: {
+      cost_x: document.getElementById('cost_x').value,
+      months: document.getElementById('months').value,
+      extra: document.getElementById('extra').value,
+      round_unit: document.getElementById('round_unit').value,
+      insurance_project_type: document.getElementById('insurance_project_type').value,
+    },
+    rules: rules,
+    rateTable: rateTable
+  };
+  const blob = new Blob([JSON.stringify(settings, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const fname = `custom_fee_settings_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`;
+  a.download = fname;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* 트리거: 파일 입력 열기 */
+function triggerLoadSettingsFile(){
+  const f = document.getElementById('settingsFileInput');
+  f.value = '';
+  f.click();
+}
+document.getElementById('settingsFileInput').addEventListener('change', (e)=>{
+  const file = e.target.files[0]; if(!file) return;
+  const r = new FileReader();
+  r.onload = ev => {
+    try{
+      const parsed = JSON.parse(ev.target.result);
+      // 기대 구조: { inputs, rules, rateTable }
+      if(parsed.inputs && parsed.rules){
+        const apply = confirm('설정 파일에서 입력값/규칙을 불러옵니다. 적용하시겠습니까? (확인=적용)');
+        if(apply){
+          loadInputs(parsed.inputs);
+          loadRules(parsed.rules);
+          if(parsed.rateTable) { 
+            rateTable = parsed.rateTable; 
+            document.getElementById('json_manual_input').value = JSON.stringify(rateTable, null, 2); 
+            updateRateAlignSelect(rateTable.align); 
+            document.getElementById('rate_info').textContent = `로드됨: ${rateTable.name||'(이름 없음)'} | cols=${rateTable.headers?.length||0}, rows=${rateTable.data?.length||0}`; 
+          }
+          updateRateXValueSelects();
+          calculateFee(); // 설정 로드 후 계산
+          alert('설정 파일 적용 완료.');
+        } else {
+          alert('설정 파일 적용 취소됨.');
+        }
+      } else {
+        alert('설정 파일 포맷 오류: inputs 및 rules 필드 필요');
+      }
+    }catch(err){
+      alert('설정 파일 파싱 오류: ' + err.message);
+    }
+  };
+  r.readAsText(file);
+});
+
+/* ------------------ 규칙 로드/저장/편집 (기존 기능 간단 유지) ------------------ */
+function loadInputs(inputs){
+  document.getElementById('cost_x').value = inputs.cost_x || '165,000,000';
+  document.getElementById('months').value = inputs.months || '12';
+  document.getElementById('extra').value = inputs.extra || '0';
+  document.getElementById('round_unit').value = inputs.round_unit || '만단위';
+  document.getElementById('insurance_project_type').value = inputs.insurance_project_type || '기타시설공사';
+  formatNumber(document.getElementById('cost_x'));
+}
+
+/**
+ * [수정] loadRules: 규칙 로드 후 SortableJS를 다시 초기화
+ */
+function loadRules(loadedRules){
+  rules = []; ruleCounter = 0; document.getElementById('rules_container').innerHTML = '';
+  loadedRules.forEach(lr=>{
+    const newRule = JSON.parse(JSON.stringify(lr));
+    newRule.id = ruleCounter++;
+    if(!newRule.params) newRule.params = { conditions: [], X_ref_var:'COSTX_VAT_EXCL', x_unit:'억원', y_unit:'%' };
+    if(!Array.isArray(newRule.params.conditions)) newRule.params.conditions = [];
+    rules.push(newRule);
+    updateRuleUI(newRule);
+  });
+  if(rules.length===0) addRule();
+  initSortableRules(); // 규칙 로드 후 SortableJS 재초기화
+}
+
+/* ------------------ Rule UI (간소화된 기존 UI 유지) ------------------ */
+function getRateXValueOptionsHTML(currentValue = '', currentRuleId = -1){
+  let options = `<option value="COSTX_VAT_EXCL" ${currentValue==='COSTX_VAT_EXCL'?'selected':''}>[기본] 공사비 (VAT 제외)</option>`;
+  options += `<option value="PROJECT_MONTHS" ${currentValue==='PROJECT_MONTHS'?'selected':''}>[기본] 용역 기간 (월)</option>`;
+  if(rateTable && rateTable.headers){
+    rateTable.headers.forEach(header=>{
+      const value = `COL_${header}`; options += `<option value="${value}" ${value===currentValue?'selected':''}>[JSON] ${header}</option>`;
+    });
+  }
+  rules.forEach(rule=>{
+    if(rule.id < currentRuleId && rule.variable){
+      options += `<option value="${rule.variable}" ${rule.variable===currentValue?'selected':''}>[변수] ${rule.variable} (${rule.displayName})</option>`;
+    }
+  });
+  return options;
+}
+function getPrevVarOptionsHTML(currentValue='', currentRuleId=-1){
+  let options = `<option value="">--- 변수 선택 ---</option>`;
+  rules.forEach(rule=>{
+    if(rule.id < currentRuleId && rule.variable){
+      options += `<option value="${rule.variable}" ${rule.variable===currentValue?'selected':''}>${rule.variable} (${rule.displayName})</option> அவருக்கு</option>`;
+    }
+  });
+  return options;
+}
+
+function getConditionValueOptionsHTML(currentValue='', currentRuleId=-1){
+  let options = `<option value="">--- 값 선택/입력 ---</option>`;
+  options += `<option value="COSTX_VAT_EXCL" ${currentValue==='COSTX_VAT_EXCL'?'selected':''}>[기본] 공사비 (VAT 제외)</option>`;
+  options += `<option value="PROJECT_MONTHS" ${currentValue==='PROJECT_MONTHS'?'selected':''}>[기본] 용역 기간 (월)</option>`;
+  if(rateTable && rateTable.headers){
+    rateTable.headers.forEach(header=>{
+      const value = `COL_${header}`; options += `<option value="${value}" ${value===currentValue?'selected':''}>[JSON] ${header}</option>`;
+    });
+  }
+  rules.forEach(rule=>{
+    if(rule.id < currentRuleId && rule.variable){
+      options += `<option value="${rule.variable}" ${rule.variable===currentValue?'selected':''}>[변수] ${rule.variable} (${rule.displayName})</option>`;
+    }
+  });
+  options += `<option value="CUSTOM_VALUE" ${currentValue==='CUSTOM_VALUE'?'selected':''}>[직접 입력] 숫자/문자</option>`;
+  return options;
+}
+
+function getConditionHTML(rule, condition, index){
+  const isCustomValue1 = condition.LHS === 'CUSTOM_VALUE';
+  const isCustomValue2 = condition.RHS === 'CUSTOM_VALUE';
+  const getLHS = ()=> isCustomValue1? `<input type="text" value="${condition.LHS_value||''}" oninput="onConditionChange(${rule.id}, ${index}, 'LHS_value', this.value)" placeholder="직접 입력">`
+    : `<select onchange="onConditionChange(${rule.id}, ${index}, 'LHS', this.value)">${getConditionValueOptionsHTML(condition.LHS, rule.id)}</select>`;
+  const getRHS = ()=> isCustomValue2? `<input type="text" value="${condition.RHS_value||''}" oninput="onConditionChange(${rule.id}, ${index}, 'RHS_value', this.value)" placeholder="직접 입력">`
+    : `<select onchange="onConditionChange(${rule.id}, ${index}, 'RHS', this.value)">${getConditionValueOptionsHTML(condition.RHS, rule.id)}</select>`;
+  const resultInput = (condition.type==='if')? `<input type="text" value="${condition.result_expression||''}" oninput="onConditionChange(${rule.id}, ${index}, 'result_expression', this.value); calculateFee();" placeholder="결과 또는 식">` : '';
+  return `<div class="condition-item" id="condition_${rule.id}_${index}">
+    <select class="type-select" onchange="onConditionChange(${rule.id}, ${index}, 'type', this.value); calculateFee();"><option value="if" ${condition.type==='if'?'selected':''}>만약</option><option value="exclude" ${condition.type==='exclude'?'selected':''}>제외</option></select>
+    ${getLHS()} <select style="flex:0.5" onchange="onConditionChange(${rule.id}, ${index}, 'operator', this.value); calculateFee();">${getOperatorOptionsHTML(condition.operator)}</select>
+    ${getRHS()} ${resultInput} <button class="danger delete-btn" onclick="removeCondition(${rule.id}, ${index})">X</button></div>`;
+}
+function addCondition(ruleId){
+  const rule = rules.find(r=>r.id===ruleId); if(!rule) return;
+  if(!Array.isArray(rule.params.conditions)) rule.params.conditions = [];
+  const newCond = { id: rule.params.conditions.length, type:'if', LHS:'COSTX_VAT_EXCL', LHS_value:'', operator: '>=', RHS:'CUSTOM_VALUE', RHS_value:'100000000', result_expression:'R1 * 0.01' };
+  rule.params.conditions.push(newCond); updateRuleUI(rule);
+}
+function removeCondition(ruleId, index){ const rule = rules.find(r=>r.id===ruleId); if(!rule) return; rule.params.conditions.splice(index,1); rule.params.conditions.forEach((c,i)=>c.id=i); updateRuleUI(rule); calculateFee(); }
+function onConditionChange(ruleId, conditionIndex, key, value){ 
+  const rule = rules.find(r=>r.id===ruleId); if(!rule) return; 
+  const cond = rule.params.conditions[conditionIndex]; if(!cond) return; 
+  cond[key]=value; 
+  if(['LHS','RHS','type'].includes(key)) updateRuleUI(rule); 
+  calculateFee();
+}
+
+/* render rule UI */
+function getColumnOptionsHTML(currentValue=''){ if(!rateTable||!rateTable.headers) return `<option value="${currentValue}">${currentValue||'JSON 미로드'}</option>`; let opt = `<option value="">--- 컬럼 선택 ---</option>`; rateTable.headers.forEach(h=> opt+=`<option value="${h}" ${h===currentValue?'selected':''}>${h}</option>`); return opt; }
+
+/**
+ * [수정] updateRuleUI: 드래그 핸들 추가 및 oninput에 calculateFee() 호출 추가
+ */
+function updateRuleUI(rule){
+  const existing = document.getElementById(`rule_${rule.id}`); if(existing) existing.remove();
+  const cont = document.getElementById('rules_container');
+  const div = document.createElement('div'); div.className='rule'; div.id=`rule_${rule.id}`;
+  const conds = (rule.params && rule.params.conditions) ? rule.params.conditions.map((c,i)=>getConditionHTML(rule,c,i)).join('') : '';
+  const x_ref_html = `<select id="x_ref_select_${rule.id}" onchange="onParamChange(${rule.id}, 'X_ref_var', this.value); calculateFee();">${getRateXValueOptionsHTML(rule.params?.X_ref_var, rule.id)}</select>`;
+  div.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center;">
+    <h4>계산 행 ${rule.id+1} <span class="badge">${rule.type}</span></h4>
+    <button class="rule-drag-handle secondary small" style="padding:4px 8px;">☰ 정렬</button>
+  </div>
+    <div class="grid">
+      <div><label>계산행 이름</label><input value="${escapeHtml(rule.displayName||`계산행 ${rule.id+1}`)}" oninput="onDisplayNameChange(${rule.id}, this.value)"></div>
+      <div><label>결과 저장 변수</label><input value="${escapeHtml(rule.variable||`R${rule.id+1}`)}" oninput="onVarChange(${rule.id}, this.value)"></div>
+      <div><label>계산 유형</label>
+        <select onchange="onTypeChange(${rule.id}, this.value)">
+          <option value="fixed" ${rule.type==='fixed'?'selected':''}>고정값</option>
+          <option value="power" ${rule.type==='power'?'selected':''}>멱함수</option>
+          <option value="linear" ${rule.type==='linear'?'selected':''}>직선보간</option>
+          <option value="slope_intercept" ${rule.type==='slope_intercept'?'selected':''}>기울기절편</option>
+          <option value="table" ${rule.type==='table'?'selected':''}>TABLE_REF</option>
+          <option value="var" ${rule.type==='var'?'selected':''}>VAR_REF</option>
+          <option value="custom_formula" ${rule.type==='custom_formula'?'selected':''}>사용자 지정식</option>
+          <option value="linked" ${rule.type==='linked'?'selected':''}>연동 계산</option>
+        </select>
+      </div>
+      <div><label>규칙 보정 계수 (Adj)</label><input type="number" step="0.0001" value="${rule.adjust||1.0}" oninput="onAdjustChange(${rule.id}, parseFloat(this.value||1)); calculateFee();"></div>
+
+      <div style="${['linear','power','slope_intercept'].includes(rule.type)?'':'display:none'}">
+        <label>X/T 적용 기준</label>${x_ref_html}
+      </div>
+
+      <div style="${['linear','power','fixed','table','slope_intercept','custom_formula'].includes(rule.type)?'':'display:none'}">
+        <label>결과 Y 단위</label><select onchange="onParamChange(${rule.id}, 'y_unit', this.value); calculateFee();">${getUnitOptionsHTML(rule.params?.y_unit)}</select>
+      </div>
+
+      <div class="full-width" style="${rule.type==='custom_formula'?'':'display:none'}">
+        <label>사용자식(텍스트)</label><input value="${escapeHtml(rule.params?.formula||'')}" oninput="onParamChange(${rule.id}, 'formula', this.value); calculateFee();">
+      </div>
+
+      <div class="full-width" style="${rule.type==='custom_formula' && rule.params?.formula_type==='conditional' ? '' : 'display:none'}">
+        <label>조건문 목록</label>
+        <div id="conditions_container_${rule.id}">${conds}<button onclick="addCondition(${rule.id})" style="width:100%; margin-top:8px;">+ 조건 추가</button></div>
+      </div>
+
+      <div style="${rule.type==='fixed'?'':'display:none'}">
+        <label>value</label><input type="number" step="0.000001" value="${rule.params?.value||0}" oninput="onParamChange(${rule.id}, 'value', parseFloat(this.value||0)); calculateFee();">
+      </div>
+
+      <div style="${rule.type==='power'?'':'display:none'}">
+        <label>X 컬럼 매핑</label><select onchange="onParamChange(${rule.id}, 'x_col', this.value); calculateFee();">${getColumnOptionsHTML(rule.params?.x_col)}</select>
+      </div>
+
+      <div style="${rule.type==='linear'?'':'display:none'}">
+        <label>X1 컬럼</label><select onchange="onParamChange(${rule.id}, 'x1_col', this.value); calculateFee();">${getColumnOptionsHTML(rule.params?.x1_col)}</select>
+      </div>
+
+      <div style="${rule.type==='linear'?'':'display:none'}">
+        <label>X2 컬럼</label><select onchange="onParamChange(${rule.id}, 'x2_col', this.value); calculateFee();">${getColumnOptionsHTML(rule.params?.x2_col)}</select>
+      </div>
+
+      <div style="${rule.type==='linear'?'':'display:none'}">
+        <label>Y 컬럼</label><select onchange="onParamChange(${rule.id}, 'y_col', this.value); calculateFee();">${getColumnOptionsHTML(rule.params?.y_col)}</select>
+      </div>
+
+      <div style="${rule.type==='slope_intercept'?'':'display:none'}">
+        <label>Y1 출처</label><select onchange="onParamChange(${rule.id}, 'y1_source', this.value); updateRuleUI(rule); calculateFee();">
+          <option value="column" ${rule.params?.y1_source==='column'?'selected':''}>JSON 컬럼</option>
+          <option value="variable" ${rule.params?.y1_source==='variable'?'selected':''}>결과 변수</option>
+        </select>
+      </div>
+
+      <div style="${rule.type==='slope_intercept' && rule.params?.y1_source==='column' ? '' : 'display:none'}">
+        <label>Y1 컬럼</label><select onchange="onParamChange(${rule.id}, 'y_col', this.value); calculateFee();">${getColumnOptionsHTML(rule.params?.y_col)}</select>
+      </div>
+
+      <div style="${rule.type==='slope_intercept' && rule.params?.y1_source==='variable' ? '' : 'display:none'}">
+        <label>Y1 변수 참조</label><select onchange="onParamChange(${rule.id}, 'y1_var_ref', this.value); calculateFee();">${getPrevVarOptionsHTML(rule.params?.y1_var_ref, rule.id)}</select>
+      </div>
+
+      <div style="${rule.type==='table'?'':'display:none'}">
+        <label>요율표 이름</label><input value="${escapeHtml(rule.params?.tableName||'')}" oninput="onParamChange(${rule.id}, 'tableName', this.value); calculateFee();">
+      </div>
+    </div>
+    <div style="margin-top:8px;"><button class="danger" onclick="removeRule(${rule.id})">삭제</button></div>`;
+  cont.appendChild(div);
+}
+
+/* update selects that depend on rules/rateTable */
+function updateRateXValueSelects(){
+  rules.forEach(rule=>{
+    const sel = document.getElementById(`x_ref_select_${rule.id}`);
+    if(sel) sel.innerHTML = getRateXValueOptionsHTML(rule.params?.X_ref_var, rule.id);
+    const y1sel = document.querySelector(`#rule_${rule.id} select[onchange*='y1_var_ref']`);
+    if(y1sel) y1sel.innerHTML = getPrevVarOptionsHTML(rule.params?.y1_var_ref, rule.id);
+    // [수정] 변수명/규칙이 추가/삭제된 경우만 전체 UI 업데이트 (조건식 변수 선택지 업데이트용)
+    // 변수명이나 규칙이 변경되지 않은 경우(예: onDisplayNameChange)에는 호출되지 않도록 합니다.
+    updateRuleUI(rule); 
+  });
+}
+
+/* rule helpers */
+function addRule(){
+  const id = ruleCounter++;
+  const rule = {
+    id, displayName:`계산행 ${id+1}`, variable:`R${id+1}`, type:'linear', adjust:1.0,
+    params: { value:0.05, a:0.8,b:0.1, x_col:'CostMin_억', x1_col:'CostMin_억', x2_col:'CostMax_억', y_col:'복잡', conditions:[], X_ref_var:'COSTX_VAT_EXCL', x_unit:'억원', y_unit:'%' , formula_type:'conditional', formula:'', default_result_expression:'0' }
+  };
+  rules.push(rule);
+  addCondition(rule.id);
+  updateRuleUI(rule);
+  updateRateXValueSelects();
+  initSortableRules(); // 새 규칙 추가 후 SortableJS 재초기화
+  calculateFee();
+}
+
+/**
+ * [수정] clearRules, removeRule: 규칙 삭제 후 SortableJS를 재초기화
+ */
+function clearRules(){ 
+  rules=[]; ruleCounter=0; document.getElementById('rules_container').innerHTML=''; 
+  addRule(); 
+  initSortableRules(); // 규칙 초기화 후 SortableJS 재초기화
+  calculateFee();
+}
+function removeRule(id){
+  rules = rules.filter(r=>r.id!==id);
+  // [수정] 규칙 삭제 후 ID 및 변수 재정렬 및 UI 전체 재렌더링
+  rules.forEach((r,i)=>{ 
+      r.id=i; 
+      r.variable=`R${i+1}`; 
+  }); 
+  ruleCounter = rules.length;
+  document.getElementById('rules_container').innerHTML = ''; // Clear container
+  rules.forEach(r => updateRuleUI(r)); // Re-render all rules
+  updateRateXValueSelects();
+  initSortableRules(); // 규칙 삭제 후 SortableJS 재초기화
+  calculateFee();
+}
+
+/**
+ * [수정 핵심] onDisplayNameChange: updateRateXValueSelects() 호출 제거
+ * 이름 변경은 다른 규칙의 참조에 영향을 주지 않으므로, UI 재렌더링을 방지합니다.
+ */
+function onDisplayNameChange(id,val){ 
+  const r = rules.find(x=>x.id===id); 
+  if(r) r.displayName = val || `계산행 ${r.id+1}`; 
+  // updateRateXValueSelects(); // UI 초기화 문제 해결을 위해 이 호출을 제거합니다.
+}
+function onVarChange(id,val){ const r = rules.find(x=>x.id===id); if(r) r.variable = (val||'').trim().toUpperCase(); updateRateXValueSelects(); }
+function onTypeChange(id,val){ const r = rules.find(x=>x.id===id); if(!r) return; r.type=val; if(val==='custom_formula' && (!r.params.conditions || r.params.conditions.length===0)) addCondition(id); updateRuleUI(r); updateRateXValueSelects(); calculateFee(); }
+function onAdjustChange(id,val){ const r = rules.find(x=>x.id===id); if(r) r.adjust = isFinite(val)? val:1.0; }
+function onParamChange(id,key,val){ const r = rules.find(x=>x.id===id); if(r) r.params[key]=val; if(['y1_source','formula_type'].includes(key)) updateRuleUI(r); calculateFee(); }
+
+/**
+ * [추가] SortableJS 초기화 함수
+ */
+function initSortableRules() {
+    const rulesContainer = document.getElementById('rules_container');
+    if (!rulesContainer) return;
+
+    new Sortable(rulesContainer, {
+        animation: 150,
+        handle: '.rule-drag-handle', // 드래그 핸들 클래스 지정
+        onEnd: function (evt) {
+            const oldIndex = evt.oldIndex;
+            const newIndex = evt.newIndex;
+            
+            // 내부 rules 배열 재정렬
+            const [movedRule] = rules.splice(oldIndex, 1);
+            rules.splice(newIndex, 0, movedRule);
+            
+            // ID 및 변수 재할당 및 UI 전체 재렌더링
+            rules.forEach((r, i) => { 
+                r.id = i; 
+                r.variable = `R${i + 1}`;
+            });
+            
+            document.getElementById('rules_container').innerHTML = ''; 
+            rules.forEach(r => updateRuleUI(r)); 
+            
+            updateRateXValueSelects();
+            calculateFee(); 
+            initSortableRules(); // 재렌더링 후 SortableJS 재적용
+        },
+    });
+}
+document.addEventListener('DOMContentLoaded', initSortableRules); // 페이지 로드 시 초기화
+
+/* ------------------ 계산 파이프라인 (안전모드: eval 제거) ------------------ */
+function parseInfinity(v){
+  if(v===Infinity) return Infinity;
+  if(typeof v==='string'){ const s=v.toLowerCase().trim(); if(s==='inf' || s==='infinity') return Infinity; }
+  const n = Number(v); return isNaN(n)? v: n;
+}
+function getValueFromRow(row, column, rt){
+  const idx = (rt.headers||[]).indexOf(column); if(idx<0) return 0.0;
+  const val = row[idx]; 
+  // [수정] 테이블의 값이 쉼표가 있을 경우 Number()는 NaN을 반환하므로, 쉼표 제거 후 숫자로 변환
+  const cleanedVal = String(val).replace(/,/g, ''); 
+  const num = Number(cleanedVal); 
+  return isNaN(num)? 0.0 : num;
+}
+function getRateRow(X_val, X1_col, X2_col){
+  if(!rateTable) return null;
+  const minIdx = rateTable.headers.indexOf(X1_col);
+  const maxIdx = rateTable.headers.indexOf(X2_col);
+  if(minIdx<0 || maxIdx<0) return null;
+  for(const row of rateTable.data){
+    const min = parseInfinity(String(row[minIdx]).replace(/,/g, '')); // [수정] 쉼표 제거
+    const max = parseInfinity(String(row[maxIdx]).replace(/,/g, '')); // [수정] 쉼표 제거
+    if(X_val >= min && X_val < max) return row;
+  }
+  return null;
+}
+function getNextRowYValue(X2, X1_col, y_col_name){
+  if(!rateTable || !y_col_name || !X1_col) return null;
+  const minIdx = rateTable.headers.indexOf(X1_col);
+  if(minIdx<0) return null;
+  
+  // [수정] X2 비교 시에도 쉼표 제거 후 비교
+  const nextRow = rateTable.data.find(row => parseInfinity(String(row[minIdx]).replace(/,/g, '')) === X2);
+  
+  if(nextRow) return getValueFromRow(nextRow, y_col_name, rateTable);
+  return null;
+}
+function linearInterpolation(x,x1,y1,x2,y2){
+  if(x1===x2) return y1;
+  if(x < Math.min(x1,x2)) return (x1<x2)? y1 : y2;
+  if(x >= Math.max(x1,x2)) return (x1<x2)? y2 : y1;
+  return y1 + (y2-y1)*((x-x1)/(x2-x1));
+}
+function powerFunction(x,a,b){ if(x<=0) return 0.0; return a*Math.pow(x,-b); }
+function roundDownFee(fee, unit){ if(unit==='천단위') return Math.floor(fee/1000)*1000; if(unit==='만단위') return Math.floor(fee/10000)*10000; return Math.floor(fee); }
+function getInsuranceRates(F, projectType){
+  const row = insuranceRate.data.find(r=>r[0]===projectType);
+  let targetRow = row || insuranceRate.data.find(r=>r[0]==='기타시설공사');
+  if(!targetRow) return {bir:0,pir:0,years:0};
+  let idx;
+  if(F <= 500000000) idx = 1;
+  else if(F <= 1000000000) idx = 3;
+  else if(F <= 2000000000) idx = 5;
+  else if(F <= 3000000000) idx = 7;
+  else idx = 9;
+  return { bir: targetRow[idx], pir: targetRow[idx+1], years: targetRow[11] };
+}
+function calculateInsurance(F, months, projectType){
+  const {bir,pir,years} = getInsuranceRates(F,projectType);
+  const ud_days = years*365;
+  const project_days = months*30;
+  const excess_days = Math.max(0, project_days - ud_days);
+  const air = pir * (excess_days/365);
+  const ir = bir + air;
+  const I = F * ir;
+  return {I,ir,bir,pir,ud_days,project_days,excess_days,air};
+}
+
+/* resolve & condition */
+function resolveValue(key, formulaScope, rateRow){
+  if(key === 'CUSTOM_VALUE') return null;
+  if(key.startsWith('COL_')){
+    const colName = key.substring(4);
+    if(rateTable && rateRow) return getValueFromRow(rateRow, colName, rateTable);
+    return 0.0;
+  }
+  const val = formulaScope[key];
+  return isFinite(val) ? Number(val) : val;
+}
+
+/**
+ * [수정] evaluateCondition: eval() 제거, 순수 JS로 조건 평가
+ */
+function evaluateCondition(condition, formulaScope, rateRow){
+  let val1 = (condition.LHS === 'CUSTOM_VALUE') ? (Number(String(condition.LHS_value).replace(/,/g, '')) || condition.LHS_value) : resolveValue(condition.LHS, formulaScope, rateRow);
+  let val2 = (condition.RHS === 'CUSTOM_VALUE') ? (Number(String(condition.RHS_value).replace(/,/g, '')) || condition.RHS_value) : resolveValue(condition.RHS, formulaScope, rateRow);
+  
+  const op = condition.operator;
+  
+  // 숫자가 아닌 값이 포함되면 문자열 비교로 간주
+  if (isNaN(Number(val1)) || isNaN(Number(val2))) {
+    val1 = String(val1).trim();
+    val2 = String(val2).trim();
+  } else {
+    // 숫자로 변환
+    val1 = Number(val1);
+    val2 = Number(val2);
+  }
+
+  // 안전한 비교 연산 (eval() 사용 안 함)
+  if (op === '==') return val1 == val2;
+  if (op === '!=') return val1 != val2;
+  if (op === '>') return val1 > val2;
+  if (op === '<') return val1 < val2;
+  if (op === '>=') return val1 >= val2;
+  if (op === '<=') return val1 <= val2;
+  
+  console.error('조건 평가 오류: 유효하지 않은 연산자'); 
+  return false;
+}
+
+/**
+ * [수정] calculateRate: custom_formula 로직에서 eval()을 math.evaluate()로 대체
+ */
+function calculateRate(initial_X_vat_excl, initial_months, results){
+  let finalRate = 0.0; results['LOG'] = []; const formulaScope = { ...results };
+  for(const rule of rules){
+    let val = 0.0; let formula = ''; let logEntry = { name: rule.displayName, variable: rule.variable, type: rule.type, result: 'N/A', formula:'', y_unit: rule.params?.y_unit || '무단위' };
+    const X_ref_var = rule.params?.X_ref_var || 'COSTX_VAT_EXCL';
+    let X_val_raw = Number(String(results[X_ref_var]).replace(/,/g, '')) || 0.0; // [수정] 쉼표 제거
+    const X_unit = rule.params?.x_unit || (X_ref_var === 'PROJECT_MONTHS' ? '월' : '원'); const X_factor = getUnitFactor(X_unit);
+    const Converted_X_val = X_val_raw * X_factor;
+    const X_col_for_row_search = rule.params?.x_col;
+    const rateRow = X_col_for_row_search ? getRateRow(Converted_X_val, X_col_for_row_search, X_col_for_row_search.replace('Min','Max')) : null;
+
+    if(rule.type === 'fixed'){ val = Number(rule.params?.value) || 0.0; formula = String(val); }
+    else if(rule.type === 'power'){
+      if(!rateTable){ logEntry.formula='JSON 미로드 오류'; logEntry.result='Error'; results['LOG'].push(logEntry); continue; }
+      let a = rule.params?.a; let b = rule.params?.b;
+      if(rateRow){
+        if(rule.params?.a_col) a = getValueFromRow(rateRow, rule.params.a_col, rateTable);
+        if(rule.params?.b_col) b = getValueFromRow(rateRow, rule.params.b_col, rateTable);
+      }
+      val = powerFunction(Converted_X_val, Number(a)||0, Number(b)||0);
+      formula = `power(${Converted_X_val})`;
+    } else if(rule.type === 'linear'){
+      if(!rateTable){ logEntry.formula='JSON 미로드 오류'; logEntry.result='Error'; results['LOG'].push(logEntry); continue; }
+      if(!rule.params?.x1_col || !rule.params?.x2_col || !rule.params?.y_col){ logEntry.formula='X1,X2,Y 매핑 누락'; logEntry.result='Error'; results['LOG'].push(logEntry); continue; }
+      if(!rateRow){ logEntry.formula=`요율표 행 미탐색 (X=${Converted_X_val})`; logEntry.result='Error'; results['LOG'].push(logEntry); continue; }
+      const x1 = getValueFromRow(rateRow, rule.params.x1_col, rateTable) || 0;
+      const x2 = getValueFromRow(rateRow, rule.params.x2_col, rateTable) || 0;
+      const y1 = getValueFromRow(rateRow, rule.params.y_col, rateTable) || 0;
+      let y2 = getNextRowYValue(x2, rule.params.x1_col, rule.params.y_col);
+      if(y2===null) y2 = y1;
+      val = linearInterpolation(Converted_X_val, x1, y1, x2, y2);
+      formula = `linearInterp(${Converted_X_val})`;
+    } else if(rule.type === 'slope_intercept'){
+      if(!rateTable){ logEntry.formula='JSON 미로드 오류'; logEntry.result='Error'; results['LOG'].push(logEntry); continue; }
+      let Y1=0; let T_ref=0; const T = Converted_X_val;
+      if(rule.params?.y1_source === 'variable' && rule.params?.y1_var_ref){ Y1 = Number(results[rule.params.y1_var_ref])||0; }
+      else if(rule.params?.y1_source === 'column' && rule.params?.y_col){ if(rateRow) Y1 = getValueFromRow(rateRow, rule.params.y_col, rateTable); }
+      else { logEntry.formula='Y1 출처 오류'; logEntry.result='Error'; results['LOG'].push(logEntry); continue; }
+      if(rule.params?.T_ref_source === 'variable' && rule.params?.T_ref_var_ref) T_ref = Number(results[rule.params.T_ref_var_ref])||0;
+      else if(rule.params?.T_ref_source === 'column' && rule.params?.T_ref_col){ if(rateRow) T_ref = getValueFromRow(rateRow, rule.params.T_ref_col, rateTable); else T_ref=0; }
+      else { logEntry.formula='T_ref 출처 오류'; logEntry.result='Error'; results['LOG'].push(logEntry); continue; }
+      if(T_ref===0){ val = Y1; formula = `Y1 (T_ref=0)`; } else { val = Y1 + ((T - T_ref) * (Y1 / T_ref)); formula = 'slope_intercept'; }
+    } else if(rule.type === 'table'){
+      const tableName = (rule.params?.tableName||'').trim(); const column = (rule.params?.column||'').trim();
+      if(rateRow && rateTable && rateTable.name === tableName){ val = getValueFromRow(rateRow, column, rateTable); formula = `TABLE[${tableName}][${column}]`; } else { val = 0; formula='TABLE_REF 미탐색'; }
+    } else if(rule.type === 'var'){
+      const ref = (rule.params?.refVarName||'').trim().toUpperCase();
+      val = Number(results[ref]) || 0; formula = ref;
+    } else if(rule.type === 'custom_formula'){
+        let executedFormula = rule.params?.formula || '0';
+        let formulaDisplay = rule.params?.formula || '0';
+        let isExcluded = false;
+
+        if (rule.params?.formula_type === 'conditional') {
+          executedFormula = rule.params?.default_result_expression || '0';
+          formulaDisplay = `기본 -> ${executedFormula}`;
+
+          for (const cond of (rule.params?.conditions || [])) {
+            const isTrue = evaluateCondition(cond, formulaScope, rateRow);
+            if (isTrue) {
+              if (cond.type === 'exclude') {
+                formulaDisplay = `제외(${cond.LHS} ${cond.operator} ${cond.RHS})`;
+                isExcluded = true;
+                break; // 제외 조건 만족 시, 이 규칙은 0으로 처리하고 반복문 종료
+              } else if (cond.type === 'if') {
+                executedFormula = cond.result_expression;
+                formulaDisplay = `만약(${cond.LHS} ${cond.operator} ${cond.RHS}) -> ${executedFormula}`;
+                break; // 조건 만족 시, 해당 식으로 계산하고 반복문 종료
+              }
+            }
+          }
+        }
+        
+        if (isExcluded) {
+          val = 0; // 제외된 경우 0
+        } else {
+          // [수정 핵심] math.evaluate를 사용하여 안전하게 수식 계산
+          try {
+            val = math.evaluate(executedFormula, formulaScope);
+            if (!isFinite(val)) throw new Error('결과 유효하지 않음');
+          } catch (e) {
+            val = 0;
+            formulaDisplay = `${formulaDisplay} -> 평가 오류:${e.message}`;
+            logEntry.result = 'Error';
+          }
+        }
+        formula = formulaDisplay;
+    }
+
+    const adj = isFinite(rule.adjust) ? rule.adjust : 1.0; val = val * adj; if(adj !== 1.0) formula = `(${formula}) * ${adj}`;
+    const varName = (rule.variable||'').trim().toUpperCase() || `R${rule.id+1}`;
+    results[varName] = val; formulaScope[varName] = val;
+    finalRate = val;
+    logEntry.result = val; logEntry.formula = formula; results['LOG'].push(logEntry);
+  }
+  return finalRate;
+}
+
+/* ------------------ 메인 계산 및 출력 ------------------ */
+function calculateFee(){
+  try{
+    const cost_x_input = document.getElementById('cost_x').value;
+    // [수정] 쉼표 제거 및 숫자로 변환
+    const cost_x = Number(cost_x_input.replace(/,/g,'')); 
+    const cost_x_vat_excl = cost_x / 1.1;
+    // [수정] 쉼표 제거 및 숫자로 변환 (oninput에서 이미 숫자 외 문자 제거)
+    const months = Number(document.getElementById('months').value.replace(/,/g,'')); 
+    const extra = Number(document.getElementById('extra').value.replace(/,/g,''));
+    const roundUnit = document.getElementById('round_unit').value;
+    const insuranceProjectType = document.getElementById('insurance_project_type').value;
+    const align_rate_str = document.getElementById('rate_align_select').value;
+    const align_rate = Number(align_rate_str) || 1.0;
+
+    if(!isFinite(cost_x) || cost_x <= 0) { 
+        document.getElementById('results').innerHTML = '<div style="color:red;">공사비는 0보다 커야 합니다.</div>';
+        return; 
+    }
+    if(!isFinite(months) || months <= 0) { 
+        document.getElementById('results').innerHTML = '<div style="color:red;">용역 기간(월)을 올바르게 입력하세요.</div>';
+        return; 
+    }
+
+    const results = {};
+    results['COSTX_VAT_INCL'] = cost_x;
+    results['COSTX_VAT_EXCL'] = cost_x_vat_excl;
+    results['PROJECT_MONTHS'] = months;
+    results['EX'] = extra;
+    results['ALIGN_RATE'] = align_rate;
+
+    let R = calculateRate(cost_x_vat_excl, months, results);
+    R = R * align_rate;
+    const F = (cost_x_vat_excl * R) + extra;
+    const { I, ir } = calculateInsurance(F, months, insuranceProjectType);
+    const VAT = (F + I) * 0.1;
+    const fee_raw = F + I + VAT;
+    const A = roundDownFee(fee_raw, roundUnit);
+
+    const out = document.getElementById('results');
+    let ruleBreakdown = '';
+    if(results['LOG']){
+      ruleBreakdown = results['LOG'].map(log=>{
+        const isRateUnit = log.y_unit === '%' || log.y_unit === '무단위';
+        const resultDisplay = typeof log.result === 'number' ? `${(log.result * (isRateUnit?100:1)).toFixed(6)}${isRateUnit? ' %' : log.y_unit}` : `<span class="muted">${log.result}</span>`;
+        return `<div class="row" style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed #e5e7eb;">
+          <div style="flex:1;">**${escapeHtml(log.name)}** (${escapeHtml(log.variable)})</div>
+          <div style="flex:2;font-size:11px;color:#4b5563;" class="mono">${escapeHtml(String(log.formula))}</div>
+          <div style="flex:0.8;text-align:right;">${resultDisplay}</div></div>`;
+      }).join('');
+    }
+
+    out.innerHTML = `
+      <div class="row"><div>입력 공사비 (VAT 포함)</div><div class="mono">${Math.round(cost_x).toLocaleString()} 원</div></div>
+      <div class="row"><div>계산 기준 공사비 (VAT 제외)</div><div class="mono">${Math.round(cost_x_vat_excl).toLocaleString()} 원</div></div>
+      <div class="row"><div>용역 기간</div><div class="mono">${months.toLocaleString()} 월</div></div>
+      <hr style="border:none;border-top:1px solid #ddd;margin:10px 0;">
+      <h3>계산 행별 상세</h3>
+      ${ruleBreakdown}
+      <hr style="border:none;border-top:1px solid #ddd;margin:10px 0;">
+      <div class="row"><div>최종 요율 (R)</div><div>${(R*100).toFixed(4)} % <span class="badge">Align ${align_rate.toFixed(2)} 적용</span></div></div>
+      <div class="row"><div>순용역비 (F)</div><div class="mono">${Math.round(F).toLocaleString()} 원</div></div>
+      <div class="row"><div>손해배상보험료 (I)</div><div class="mono">${Math.round(I).toLocaleString()} 원</div></div>
+      <div class="row"><div>부가세 (VAT)</div><div class="mono">${Math.round(VAT).toLocaleString()} 원</div></div>
+      <div class="row"><div>최종용역비 (A)</div><div class="mono" style="font-weight:700;">${Math.round(A).toLocaleString()} 원</div></div>
+    `;
+  }catch(e){
+    alert('계산 오류: ' + e.message);
+    console.error(e);
+  }
+}
+
+/* ------------------ 편의 함수 ------------------ */
+function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function toggleDebug(){ showDebug = !showDebug; alert('디버그 모드: ' + (showDebug ? 'ON' : 'OFF')); }
+
+/* ------------------ 수동 JSON textarea 유틸 ------------------ */
+function clearManualInput(){ document.getElementById('json_manual_input').value = ''; document.getElementById('json_table_editor').style.display='none'; }
+
+/* ------------------ rateTable 파일 다운로드 (현재 rateTable을 파일로) ------------------ */
+function downloadCurrentRateTable(){
+  if(!rateTable) return alert('rateTable이 없습니다.');
+  const blob = new Blob([JSON.stringify(rateTable, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${(rateTable.name||'rateTable').replace(/\s+/g,'_')}.json`;
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+
+/* ------------------ 초기 로드 (localStorage 유지 옵션) ------------------ */
+function loadSavedSettings(){
+  try{
+    const saved = localStorage.getItem('customFeeCalculatorSettings');
+    if(!saved){ addRule(); return; }
+    const settings = JSON.parse(saved);
+    if(settings.inputs) loadInputs(settings.inputs);
+    if(settings.rules) loadRules(settings.rules);
+    if(settings.rateTable){ 
+        rateTable = settings.rateTable; 
+        document.getElementById('json_manual_input').value = JSON.stringify(rateTable, null, 2); 
+        document.getElementById('rate_info').textContent = `로드됨: ${rateTable.name||'(이름 없음)'} | cols=${rateTable.headers?.length||0}, rows=${rateTable.data?.length||0}`; 
+        updateRateAlignSelect(rateTable.align); 
+    }
+    updateRateXValueSelects();
+    calculateFee(); // 초기 로드 후 계산
+  }catch(e){ console.error('자동 로드 실패', e); addRule(); }
+}
+</script>
+</body>
+</html>
